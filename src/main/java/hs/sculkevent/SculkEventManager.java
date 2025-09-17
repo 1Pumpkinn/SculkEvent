@@ -3,6 +3,7 @@ package hs.sculkevent;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import java.util.*;
@@ -13,6 +14,8 @@ public class SculkEventManager {
 
     private final SculkEventPlugin plugin;
     private final SculkDataManager dataManager;
+    private final PlayerStatsManager statsManager;
+    private final CorruptedHornManager hornManager;
 
     private boolean eventActive = false;
     private Location eventCenter;
@@ -27,9 +30,37 @@ public class SculkEventManager {
     private BukkitTask spreadTask;
     private BukkitTask detailSpawnTask;
 
-    public SculkEventManager(SculkEventPlugin plugin, SculkDataManager dataManager) {
+    // Spreadable blocks
+    private final Set<Material> spreadableBlocks = Set.of(
+            Material.GRASS_BLOCK,
+            Material.STONE,
+            Material.COBBLESTONE,
+            Material.MOSSY_COBBLESTONE,
+            Material.STONE_BRICKS,
+            Material.MOSSY_STONE_BRICKS,
+            Material.DIRT,
+            Material.COARSE_DIRT,
+            Material.PODZOL,
+            Material.MYCELIUM,
+            // All leaf types
+            Material.OAK_LEAVES,
+            Material.BIRCH_LEAVES,
+            Material.SPRUCE_LEAVES,
+            Material.JUNGLE_LEAVES,
+            Material.ACACIA_LEAVES,
+            Material.DARK_OAK_LEAVES,
+            Material.CHERRY_LEAVES,
+            Material.MANGROVE_LEAVES,
+            Material.AZALEA_LEAVES,
+            Material.FLOWERING_AZALEA_LEAVES
+    );
+
+    public SculkEventManager(SculkEventPlugin plugin, SculkDataManager dataManager,
+                             PlayerStatsManager statsManager, CorruptedHornManager hornManager) {
         this.plugin = plugin;
         this.dataManager = dataManager;
+        this.statsManager = statsManager;
+        this.hornManager = hornManager;
         loadSavedData();
     }
 
@@ -53,22 +84,20 @@ public class SculkEventManager {
         curedLocations.addAll(dataManager.loadCuredLocations());
         plugin.getLogger().info("Loaded " + curedLocations.size() + " cured locations");
 
-        // Start with the center block - check what type it is
+        // Start with the center block
         Block centerBlock = center.getBlock();
         plugin.getLogger().info("Center block type: " + centerBlock.getType());
-        plugin.getLogger().info("Center block location: " + centerBlock.getLocation().toString());
-        plugin.getLogger().info("Is location cured: " + curedLocations.contains(center));
 
-        // Try to convert center block regardless of type for initial testing
-        if (!curedLocations.contains(center)) {
+        // Try to convert center block if it's spreadable
+        if (isSpreadableBlock(centerBlock.getType()) && !curedLocations.contains(center)) {
             plugin.getLogger().info("Converting center block to sculk");
             convertToSculk(centerBlock);
-            addNearbyGrassToQueue(center);
+            addNearbySpreadableToQueue(center);
         } else {
-            plugin.getLogger().info("Center location is cured, skipping");
+            plugin.getLogger().info("Center location is cured or not spreadable, skipping");
         }
 
-        // Also manually add some grass blocks around the center to the queue
+        // Add initial spread area
         for (int x = -3; x <= 3; x++) {
             for (int z = -3; z <= 3; z++) {
                 if (x == 0 && z == 0) continue;
@@ -76,9 +105,9 @@ public class SculkEventManager {
                 Location loc = center.clone().add(x, 0, z);
                 Block block = loc.getBlock();
 
-                if (block.getType() == Material.GRASS_BLOCK && !curedLocations.contains(loc)) {
+                if (isSpreadableBlock(block.getType()) && !curedLocations.contains(loc)) {
                     spreadQueue.add(loc);
-                    plugin.getLogger().info("Added grass block to queue: " + loc.toString());
+                    plugin.getLogger().info("Added " + block.getType() + " block to queue: " + loc.toString());
                 }
             }
         }
@@ -89,6 +118,10 @@ public class SculkEventManager {
         startDetailSpawningTask();
 
         return true;
+    }
+
+    private boolean isSpreadableBlock(Material material) {
+        return spreadableBlocks.contains(material);
     }
 
     public boolean stopEvent() {
@@ -106,6 +139,9 @@ public class SculkEventManager {
             detailSpawnTask.cancel();
         }
 
+        // Award the corrupted horn to the top player
+        awardCorruptedHorn();
+
         // Restore original blocks
         restoreOriginalBlocks();
 
@@ -114,6 +150,42 @@ public class SculkEventManager {
         spreadQueue.clear();
 
         return true;
+    }
+
+    private void awardCorruptedHorn() {
+        UUID topPlayerId = statsManager.getTopPlayer();
+        if (topPlayerId != null) {
+            Player topPlayer = Bukkit.getPlayer(topPlayerId);
+            if (topPlayer != null && topPlayer.isOnline()) {
+                hornManager.giveCorruptedHorn(topPlayer);
+
+                // Show leaderboard
+                showLeaderboard();
+            }
+        }
+    }
+
+    private void showLeaderboard() {
+        List<Map.Entry<UUID, Integer>> topPlayers = statsManager.getTopPlayers(5);
+
+        Bukkit.broadcastMessage("");
+        Bukkit.broadcastMessage(ChatColor.GOLD + "=== SCULK CLEANUP LEADERBOARD ===");
+
+        for (int i = 0; i < topPlayers.size(); i++) {
+            Map.Entry<UUID, Integer> entry = topPlayers.get(i);
+            Player player = Bukkit.getPlayer(entry.getKey());
+            String playerName = player != null ? player.getName() : "Unknown Player";
+
+            String position = ChatColor.YELLOW + "#" + (i + 1) + " ";
+            if (i == 0) position = ChatColor.GOLD + "🥇 ";
+            else if (i == 1) position = ChatColor.GRAY + "🥈 ";
+            else if (i == 2) position = ChatColor.GOLD + "🥉 ";
+
+            Bukkit.broadcastMessage(position + ChatColor.WHITE + playerName +
+                    ChatColor.GRAY + " - " + ChatColor.GREEN + entry.getValue() + " blocks cleaned");
+        }
+
+        Bukkit.broadcastMessage("");
     }
 
     private void startSpreadingTask() {
@@ -128,7 +200,6 @@ public class SculkEventManager {
 
                 // Always try to spread from existing sculk blocks if queue is empty
                 if (spreadQueue.isEmpty()) {
-                    // Add all sculk blocks back to queue for continuous spreading
                     for (Location sculkLoc : sculkBlocks.keySet()) {
                         Block block = sculkLoc.getBlock();
                         if (block.getType() == Material.SCULK) {
@@ -141,25 +212,21 @@ public class SculkEventManager {
                     }
                 }
 
-                plugin.getLogger().info("Processing spread queue, size: " + spreadQueue.size());
-
                 // Process more blocks per tick for faster spreading
                 List<Location> toProcess = new ArrayList<>();
                 Iterator<Location> iterator = spreadQueue.iterator();
 
-                int batchSize = Math.min(10, spreadQueue.size()); // Increased batch size
+                int batchSize = Math.min(10, spreadQueue.size());
                 for (int i = 0; i < batchSize && iterator.hasNext(); i++) {
                     toProcess.add(iterator.next());
                     iterator.remove();
                 }
 
-                plugin.getLogger().info("Processing " + toProcess.size() + " locations");
-
                 for (Location loc : toProcess) {
                     processSpread(loc);
                 }
             }
-        }.runTaskTimer(plugin, 0L, 5L); // Run every 5 ticks (0.25 seconds) for visible spreading
+        }.runTaskTimer(plugin, 0L, 5L);
     }
 
     private void startDetailSpawningTask() {
@@ -170,70 +237,69 @@ public class SculkEventManager {
                     return;
                 }
 
-                // Only spawn details if we have a good amount of sculk blocks
                 if (sculkBlocks.size() < 5) {
                     return;
                 }
 
                 spawnSculkDetails();
             }
-        }.runTaskTimer(plugin, 200L, 60L); // Start after 10 seconds, run every 3 seconds
+        }.runTaskTimer(plugin, 200L, 60L);
     }
 
     private void processSpread(Location center) {
-        plugin.getLogger().info("Processing spread at: " + center.toString());
-
         int spreadCount = 0;
 
-        // Spread to nearby grass blocks in a larger area
+        // Spread to nearby spreadable blocks in a larger area
         for (int x = -2; x <= 2; x++) {
             for (int z = -2; z <= 2; z++) {
-                if (x == 0 && z == 0) continue;
+                for (int y = -1; y <= 1; y++) { // Also check above and below
+                    if (x == 0 && z == 0 && y == 0) continue;
 
-                Location loc = center.clone().add(x, 0, z);
+                    Location loc = center.clone().add(x, y, z);
 
-                // Check distance from event center
-                double distance = loc.distance(eventCenter);
-                if (distance > maxRadius) {
-                    continue;
-                }
-
-                // Skip if location is cured
-                if (curedLocations.contains(loc)) {
-                    continue;
-                }
-
-                Block block = loc.getBlock();
-
-                // Only spread to grass blocks that aren't already sculk
-                if (block.getType() == Material.GRASS_BLOCK && !sculkBlocks.containsKey(loc)) {
-                    // Higher chance to spread based on distance from center (closer = higher chance)
-                    double spreadChance = Math.max(0.3, 1.0 - (distance / maxRadius));
-
-                    if (ThreadLocalRandom.current().nextDouble() < spreadChance) {
-                        plugin.getLogger().info("Converting grass to sculk at: " + loc.toString() + " (distance: " + String.format("%.1f", distance) + ")");
-                        convertToSculk(block);
-                        spreadCount++;
-
-                        // Add visual effects
-                        loc.getWorld().playSound(loc, Sound.BLOCK_SCULK_SPREAD, 0.3f,
-                                0.8f + ThreadLocalRandom.current().nextFloat() * 0.4f);
-                        loc.getWorld().spawnParticle(Particle.SCULK_SOUL, loc.clone().add(0.5, 1, 0.5),
-                                3, 0.3, 0.1, 0.3, 0.01);
+                    // Check distance from event center
+                    double distance = loc.distance(eventCenter);
+                    if (distance > maxRadius) {
+                        continue;
                     }
-                } else if (block.getType() != Material.GRASS_BLOCK && block.getType() != Material.SCULK) {
-                    plugin.getLogger().info("Block at " + loc.toString() + " is not grass, it's: " + block.getType());
+
+                    // Skip if location is cured
+                    if (curedLocations.contains(loc)) {
+                        continue;
+                    }
+
+                    Block block = loc.getBlock();
+
+                    // Only spread to spreadable blocks that aren't already sculk
+                    if (isSpreadableBlock(block.getType()) && !sculkBlocks.containsKey(loc)) {
+                        // Higher chance to spread based on distance from center
+                        double spreadChance = Math.max(0.2, 1.0 - (distance / maxRadius));
+
+                        // Different spread chances for different materials
+                        if (block.getType().name().contains("LEAVES")) {
+                            spreadChance *= 0.8; // Leaves spread slightly slower
+                        } else if (block.getType() == Material.STONE || block.getType().name().contains("STONE")) {
+                            spreadChance *= 0.6; // Stone spreads slower
+                        }
+
+                        if (ThreadLocalRandom.current().nextDouble() < spreadChance) {
+                            convertToSculk(block);
+                            spreadCount++;
+
+                            // Add visual effects
+                            loc.getWorld().playSound(loc, Sound.BLOCK_SCULK_SPREAD, 0.3f,
+                                    0.8f + ThreadLocalRandom.current().nextFloat() * 0.4f);
+                            loc.getWorld().spawnParticle(Particle.SCULK_SOUL, loc.clone().add(0.5, 1, 0.5),
+                                    3, 0.3, 0.1, 0.3, 0.01);
+                        }
+                    }
                 }
             }
         }
-
-        plugin.getLogger().info("Spread " + spreadCount + " new sculk blocks from " + center.toString());
     }
 
     private void convertToSculk(Block block) {
         Location loc = block.getLocation();
-
-        plugin.getLogger().info("Converting block at " + loc.toString() + " from " + block.getType() + " to SCULK");
 
         // Store original material
         sculkBlocks.put(loc, block.getType());
@@ -241,25 +307,25 @@ public class SculkEventManager {
         // Convert to sculk
         block.setType(Material.SCULK);
 
-        plugin.getLogger().info("Block converted successfully, new type: " + block.getType());
-
         // Play sound and particle effects
         loc.getWorld().playSound(loc, Sound.BLOCK_SCULK_PLACE, 0.5f, 1.0f);
     }
 
-    private void addNearbyGrassToQueue(Location center) {
-        // Add nearby grass blocks to spread queue in a larger radius
+    private void addNearbySpreadableToQueue(Location center) {
+        // Add nearby spreadable blocks to spread queue
         for (int x = -3; x <= 3; x++) {
             for (int z = -3; z <= 3; z++) {
-                if (x == 0 && z == 0) continue;
+                for (int y = -1; y <= 1; y++) {
+                    if (x == 0 && z == 0 && y == 0) continue;
 
-                Location loc = center.clone().add(x, 0, z);
+                    Location loc = center.clone().add(x, y, z);
 
-                if (loc.distance(eventCenter) <= maxRadius &&
-                        loc.getBlock().getType() == Material.GRASS_BLOCK &&
-                        !sculkBlocks.containsKey(loc) &&
-                        !curedLocations.contains(loc)) {
-                    spreadQueue.add(loc);
+                    if (loc.distance(eventCenter) <= maxRadius &&
+                            isSpreadableBlock(loc.getBlock().getType()) &&
+                            !sculkBlocks.containsKey(loc) &&
+                            !curedLocations.contains(loc)) {
+                        spreadQueue.add(loc);
+                    }
                 }
             }
         }
@@ -310,12 +376,13 @@ public class SculkEventManager {
         }
     }
 
-    public boolean cureLocation(Location location) {
+    public boolean cureLocation(Location location, Player player) {
         if (!eventActive) {
             return false;
         }
 
         boolean cured = false;
+        int cleanupCount = 0;
 
         // Cure sculk in a 3x3 area
         for (int x = -1; x <= 1; x++) {
@@ -334,12 +401,13 @@ public class SculkEventManager {
                     // Add to cured locations (permanent)
                     curedLocations.add(cureSpot);
 
+                    cleanupCount++;
+                    cured = true;
+
                     // Effects
                     cureSpot.getWorld().playSound(cureSpot, Sound.ITEM_BUCKET_EMPTY, 1.0f, 1.2f);
                     cureSpot.getWorld().spawnParticle(Particle.SPLASH, cureSpot.add(0.5, 1, 0.5),
                             10, 0.5, 0.3, 0.5, 0.1);
-
-                    cured = true;
                 }
 
                 // Also cure sculk details above
@@ -349,12 +417,21 @@ public class SculkEventManager {
                     if (isSculkDetail(aboveBlock.getType())) {
                         aboveBlock.setType(Material.AIR);
                         sculkBlocks.remove(above);
+                        cleanupCount++;
                     }
                 }
             }
         }
 
-        if (cured) {
+        if (cured && player != null) {
+            // Add to player's cleanup stats
+            statsManager.addSculkCleanup(player.getUniqueId(), cleanupCount);
+
+            // Show progress message
+            int totalCleaned = statsManager.getSculkCleanupCount(player.getUniqueId());
+            player.sendMessage(ChatColor.GREEN + "+" + cleanupCount + " sculk blocks cleaned! " +
+                    ChatColor.GRAY + "(Total: " + totalCleaned + ")");
+
             // Save cured locations immediately
             dataManager.saveCuredLocations(curedLocations);
         }
@@ -396,12 +473,17 @@ public class SculkEventManager {
             Block block = sculkLoc.getBlock();
             if (block.getType() == Material.SCULK) {
                 spreadQueue.add(sculkLoc);
-                // Also add grass blocks around each sculk block
-                addNearbyGrassToQueue(sculkLoc);
+                // Also add spreadable blocks around each sculk block
+                addNearbySpreadableToQueue(sculkLoc);
             }
         }
 
         plugin.getLogger().info("Force spread triggered, queue size: " + spreadQueue.size());
+    }
+
+    public void resetStats() {
+        statsManager.resetStats();
+        hornManager.resetHornOwners();
     }
 
     // Getters
@@ -423,5 +505,13 @@ public class SculkEventManager {
 
     public int getSpreadQueueSize() {
         return spreadQueue.size();
+    }
+
+    public PlayerStatsManager getStatsManager() {
+        return statsManager;
+    }
+
+    public CorruptedHornManager getHornManager() {
+        return hornManager;
     }
 }
