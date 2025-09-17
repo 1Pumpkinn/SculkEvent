@@ -1,0 +1,23 @@
+name: SculkEvent
+version: 1.0.0
+main: hs.sculkevent.SculkEventPlugin
+author: YourName
+description: A plugin that creates realistic sculk spreading events
+api-version: 1.21
+
+commands:
+  sculkevent:
+    description: Main command for sculk events
+    usage: /sculkevent <start|stop|status|help>
+    permission: sculkevent.admin
+    aliases: [se, sculk]
+
+permissions:
+  sculkevent.admin:
+    description: Allows use of sculk event commands
+    default: op
+  sculkevent.*:
+    description: Gives access to all sculk event permissions
+    default: op
+    children:
+      sculkevent.admin: true
