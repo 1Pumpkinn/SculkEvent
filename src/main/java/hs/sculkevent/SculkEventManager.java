@@ -25,10 +25,12 @@ public class SculkEventManager {
     private final Map<Location, Material> sculkBlocks = new ConcurrentHashMap<>();
     private final Set<Location> curedLocations = ConcurrentHashMap.newKeySet();
     private final Set<Location> spreadQueue = ConcurrentHashMap.newKeySet();
+    private final Set<Location> tentacleBlocks = ConcurrentHashMap.newKeySet(); // Track tentacle structures
 
     // Spreading task
     private BukkitTask spreadTask;
     private BukkitTask detailSpawnTask;
+    private BukkitTask tentacleTask;
 
     // Spreadable blocks
     private final Set<Material> spreadableBlocks = Set.of(
@@ -42,6 +44,11 @@ public class SculkEventManager {
             Material.COARSE_DIRT,
             Material.PODZOL,
             Material.MYCELIUM,
+            Material.ANDESITE,
+            Material.DIORITE,
+            Material.GRANITE,
+            Material.DEEPSLATE,
+            Material.TUFF,
             // All leaf types
             Material.OAK_LEAVES,
             Material.BIRCH_LEAVES,
@@ -52,7 +59,22 @@ public class SculkEventManager {
             Material.CHERRY_LEAVES,
             Material.MANGROVE_LEAVES,
             Material.AZALEA_LEAVES,
-            Material.FLOWERING_AZALEA_LEAVES
+            Material.FLOWERING_AZALEA_LEAVES,
+            // Wood blocks
+            Material.OAK_LOG,
+            Material.BIRCH_LOG,
+            Material.SPRUCE_LOG,
+            Material.JUNGLE_LOG,
+            Material.ACACIA_LOG,
+            Material.DARK_OAK_LOG,
+            Material.CHERRY_LOG,
+            Material.MANGROVE_LOG,
+            Material.OAK_WOOD,
+            Material.BIRCH_WOOD,
+            Material.SPRUCE_WOOD,
+            Material.JUNGLE_WOOD,
+            Material.ACACIA_WOOD,
+            Material.DARK_OAK_WOOD
     );
 
     public SculkEventManager(SculkEventPlugin plugin, SculkDataManager dataManager,
@@ -77,24 +99,24 @@ public class SculkEventManager {
 
         // Clear previous data for new event
         sculkBlocks.clear();
-        curedLocations.clear();
         spreadQueue.clear();
+        tentacleBlocks.clear();
 
-        // Load any previously cured locations
+        // Load any previously cured locations (these stay permanent)
         curedLocations.addAll(dataManager.loadCuredLocations());
-        plugin.getLogger().info("Loaded " + curedLocations.size() + " cured locations");
+        plugin.getLogger().info("Loaded " + curedLocations.size() + " permanently cured locations");
 
         // Start with the center block
         Block centerBlock = center.getBlock();
         plugin.getLogger().info("Center block type: " + centerBlock.getType());
 
-        // Try to convert center block if it's spreadable
-        if (isSpreadableBlock(centerBlock.getType()) && !curedLocations.contains(center)) {
+        // Try to convert center block if it's spreadable and NOT cured
+        if (isSpreadableBlock(centerBlock.getType()) && !isPermanentlyCured(center)) {
             plugin.getLogger().info("Converting center block to sculk");
             convertToSculk(centerBlock);
             addNearbySpreadableToQueue(center);
         } else {
-            plugin.getLogger().info("Center location is cured or not spreadable, skipping");
+            plugin.getLogger().info("Center location is permanently cured or not spreadable, skipping");
         }
 
         // Add initial spread area
@@ -105,7 +127,7 @@ public class SculkEventManager {
                 Location loc = center.clone().add(x, 0, z);
                 Block block = loc.getBlock();
 
-                if (isSpreadableBlock(block.getType()) && !curedLocations.contains(loc)) {
+                if (isSpreadableBlock(block.getType()) && !isPermanentlyCured(loc)) {
                     spreadQueue.add(loc);
                     plugin.getLogger().info("Added " + block.getType() + " block to queue: " + loc.toString());
                 }
@@ -116,12 +138,18 @@ public class SculkEventManager {
 
         startSpreadingTask();
         startDetailSpawningTask();
+        startTentacleTask();
 
         return true;
     }
 
     private boolean isSpreadableBlock(Material material) {
         return spreadableBlocks.contains(material);
+    }
+
+    private boolean isPermanentlyCured(Location location) {
+        // Check if this exact location is permanently cured
+        return curedLocations.contains(location);
     }
 
     public boolean stopEvent() {
@@ -138,6 +166,9 @@ public class SculkEventManager {
         if (detailSpawnTask != null) {
             detailSpawnTask.cancel();
         }
+        if (tentacleTask != null) {
+            tentacleTask.cancel();
+        }
 
         // Award the corrupted horn to the top player
         awardCorruptedHorn();
@@ -148,6 +179,7 @@ public class SculkEventManager {
         // Clear runtime data but keep cured locations
         sculkBlocks.clear();
         spreadQueue.clear();
+        tentacleBlocks.clear();
 
         return true;
     }
@@ -158,8 +190,6 @@ public class SculkEventManager {
             Player topPlayer = Bukkit.getPlayer(topPlayerId);
             if (topPlayer != null && topPlayer.isOnline()) {
                 hornManager.giveCorruptedHorn(topPlayer);
-
-                // Show leaderboard
                 showLeaderboard();
             }
         }
@@ -203,12 +233,8 @@ public class SculkEventManager {
                     for (Location sculkLoc : sculkBlocks.keySet()) {
                         Block block = sculkLoc.getBlock();
                         if (block.getType() == Material.SCULK) {
-                            spreadQueue.add(sculkLoc);
+                            addNearbySpreadableToQueue(sculkLoc);
                         }
-                    }
-
-                    if (spreadQueue.isEmpty()) {
-                        return;
                     }
                 }
 
@@ -216,7 +242,7 @@ public class SculkEventManager {
                 List<Location> toProcess = new ArrayList<>();
                 Iterator<Location> iterator = spreadQueue.iterator();
 
-                int batchSize = Math.min(10, spreadQueue.size());
+                int batchSize = Math.min(15, spreadQueue.size());
                 for (int i = 0; i < batchSize && iterator.hasNext(); i++) {
                     toProcess.add(iterator.next());
                     iterator.remove();
@@ -226,33 +252,42 @@ public class SculkEventManager {
                     processSpread(loc);
                 }
             }
-        }.runTaskTimer(plugin, 0L, 5L);
+        }.runTaskTimer(plugin, 0L, 3L); // Faster spreading
     }
 
     private void startDetailSpawningTask() {
         detailSpawnTask = new BukkitRunnable() {
             @Override
             public void run() {
-                if (!eventActive) {
+                if (!eventActive || sculkBlocks.size() < 5) {
                     return;
                 }
-
-                if (sculkBlocks.size() < 5) {
-                    return;
-                }
-
                 spawnSculkDetails();
             }
         }.runTaskTimer(plugin, 200L, 60L);
     }
 
-    private void processSpread(Location center) {
-        int spreadCount = 0;
+    private void startTentacleTask() {
+        tentacleTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (!eventActive || sculkBlocks.size() < 20) {
+                    return;
+                }
 
-        // Spread to nearby spreadable blocks in a larger area
+                // Spawn tentacles occasionally
+                if (ThreadLocalRandom.current().nextDouble() < 0.3) { // 30% chance every cycle
+                    spawnSculkTentacle();
+                }
+            }
+        }.runTaskTimer(plugin, 400L, 200L); // Every 10 seconds
+    }
+
+    private void processSpread(Location center) {
+        // Enhanced spreading in 3D - can spread upward more aggressively
         for (int x = -2; x <= 2; x++) {
             for (int z = -2; z <= 2; z++) {
-                for (int y = -1; y <= 1; y++) { // Also check above and below
+                for (int y = -2; y <= 3; y++) { // More upward spread potential
                     if (x == 0 && z == 0 && y == 0) continue;
 
                     Location loc = center.clone().add(x, y, z);
@@ -263,8 +298,8 @@ public class SculkEventManager {
                         continue;
                     }
 
-                    // Skip if location is cured
-                    if (curedLocations.contains(loc)) {
+                    // CRITICAL FIX: Skip if location is permanently cured
+                    if (isPermanentlyCured(loc)) {
                         continue;
                     }
 
@@ -272,19 +307,25 @@ public class SculkEventManager {
 
                     // Only spread to spreadable blocks that aren't already sculk
                     if (isSpreadableBlock(block.getType()) && !sculkBlocks.containsKey(loc)) {
-                        // Higher chance to spread based on distance from center
-                        double spreadChance = Math.max(0.2, 1.0 - (distance / maxRadius));
+                        // Higher chance to spread upward and based on distance
+                        double spreadChance = Math.max(0.15, 0.8 - (distance / maxRadius));
+
+                        // Bonus chance for upward spreading
+                        if (y > 0) {
+                            spreadChance *= 1.2; // 20% bonus for spreading up
+                        }
 
                         // Different spread chances for different materials
                         if (block.getType().name().contains("LEAVES")) {
-                            spreadChance *= 0.8; // Leaves spread slightly slower
+                            spreadChance *= 1.1; // Leaves spread faster now
+                        } else if (block.getType().name().contains("LOG") || block.getType().name().contains("WOOD")) {
+                            spreadChance *= 1.3; // Wood spreads much faster (organic)
                         } else if (block.getType() == Material.STONE || block.getType().name().contains("STONE")) {
-                            spreadChance *= 0.6; // Stone spreads slower
+                            spreadChance *= 0.7; // Stone spreads slower
                         }
 
                         if (ThreadLocalRandom.current().nextDouble() < spreadChance) {
                             convertToSculk(block);
-                            spreadCount++;
 
                             // Add visual effects
                             loc.getWorld().playSound(loc, Sound.BLOCK_SCULK_SPREAD, 0.3f,
@@ -294,6 +335,146 @@ public class SculkEventManager {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private void spawnSculkTentacle() {
+        // Find a good sculk block to start from
+        List<Location> sculkLocs = new ArrayList<>();
+        for (Location loc : sculkBlocks.keySet()) {
+            Block block = loc.getBlock();
+            if (block.getType() == Material.SCULK) {
+                // Check if there's space above for a tentacle
+                boolean hasSpace = true;
+                for (int i = 1; i <= 8; i++) {
+                    Block above = block.getRelative(0, i, 0);
+                    if (above.getType().isSolid() && !isSpreadableBlock(above.getType())) {
+                        hasSpace = false;
+                        break;
+                    }
+                }
+                if (hasSpace) {
+                    sculkLocs.add(loc);
+                }
+            }
+        }
+
+        if (sculkLocs.isEmpty()) {
+            return;
+        }
+
+        Location baseLocation = sculkLocs.get(ThreadLocalRandom.current().nextInt(sculkLocs.size()));
+        buildTentacle(baseLocation);
+    }
+
+    private void buildTentacle(Location base) {
+        World world = base.getWorld();
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+
+        // Tentacle parameters
+        int height = random.nextInt(5, 12); // 5-11 blocks tall
+        int segments = height / 2;
+
+        // Build main tentacle trunk
+        for (int y = 1; y <= height; y++) {
+            Location tentacleLoc = base.clone().add(0, y, 0);
+
+            // Skip if permanently cured
+            if (isPermanentlyCured(tentacleLoc)) {
+                continue;
+            }
+
+            Block tentacleBlock = tentacleLoc.getBlock();
+
+            if (tentacleBlock.getType() == Material.AIR || isSpreadableBlock(tentacleBlock.getType())) {
+                // Store original if not air
+                if (tentacleBlock.getType() != Material.AIR) {
+                    sculkBlocks.put(tentacleLoc, tentacleBlock.getType());
+                } else {
+                    sculkBlocks.put(tentacleLoc, Material.AIR);
+                }
+
+                tentacleBlock.setType(Material.SCULK);
+                tentacleBlocks.add(tentacleLoc);
+
+                // Add some organic curves to the tentacle
+                if (y > 2 && random.nextDouble() < 0.3) {
+                    int xOffset = random.nextInt(-1, 2);
+                    int zOffset = random.nextInt(-1, 2);
+
+                    if (xOffset != 0 || zOffset != 0) {
+                        Location curvedLoc = tentacleLoc.clone().add(xOffset, 0, zOffset);
+                        if (!isPermanentlyCured(curvedLoc)) {
+                            Block curvedBlock = curvedLoc.getBlock();
+                            if (curvedBlock.getType() == Material.AIR || isSpreadableBlock(curvedBlock.getType())) {
+                                sculkBlocks.put(curvedLoc, curvedBlock.getType());
+                                curvedBlock.setType(Material.SCULK);
+                                tentacleBlocks.add(curvedLoc);
+                            }
+                        }
+                    }
+                }
+
+                // Add branches occasionally
+                if (y > 3 && y % 3 == 0 && random.nextDouble() < 0.4) {
+                    createTentacleBranch(tentacleLoc, random.nextInt(2, 5));
+                }
+
+                // Effects
+                world.playSound(tentacleLoc, Sound.BLOCK_SCULK_PLACE, 0.4f, 0.8f);
+                world.spawnParticle(Particle.SCULK_SOUL, tentacleLoc.add(0.5, 0.5, 0.5), 2, 0.2, 0.2, 0.2, 0.01);
+            }
+        }
+
+        // Add a shrieker or sensor at the top
+        Location tipLocation = base.clone().add(0, height + 1, 0);
+        if (!isPermanentlyCured(tipLocation)) {
+            Block tipBlock = tipLocation.getBlock();
+            if (tipBlock.getType() == Material.AIR) {
+                sculkBlocks.put(tipLocation, Material.AIR);
+                if (random.nextBoolean()) {
+                    tipBlock.setType(Material.SCULK_SHRIEKER);
+                } else {
+                    tipBlock.setType(Material.SCULK_SENSOR);
+                }
+                tentacleBlocks.add(tipLocation);
+
+                world.playSound(tipLocation, Sound.BLOCK_SCULK_SHRIEKER_PLACE, 0.8f, 1.0f);
+                world.spawnParticle(Particle.SCULK_SOUL, tipLocation.add(0.5, 0.5, 0.5), 5, 0.3, 0.3, 0.3, 0.05);
+            }
+        }
+
+        // Announcement
+        Bukkit.broadcastMessage(ChatColor.DARK_PURPLE + "A massive sculk tentacle erupts from the ground!");
+        world.playSound(base, Sound.ENTITY_WARDEN_ROAR, 1.0f, 0.8f);
+    }
+
+    private void createTentacleBranch(Location branchStart, int branchLength) {
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        World world = branchStart.getWorld();
+
+        // Random direction for branch
+        int xDir = random.nextInt(-1, 2);
+        int zDir = random.nextInt(-1, 2);
+        if (xDir == 0 && zDir == 0) {
+            xDir = random.nextBoolean() ? 1 : -1;
+        }
+
+        for (int i = 1; i <= branchLength; i++) {
+            Location branchLoc = branchStart.clone().add(xDir * i, random.nextInt(-1, 2), zDir * i);
+
+            if (isPermanentlyCured(branchLoc)) {
+                continue;
+            }
+
+            Block branchBlock = branchLoc.getBlock();
+            if (branchBlock.getType() == Material.AIR || isSpreadableBlock(branchBlock.getType())) {
+                sculkBlocks.put(branchLoc, branchBlock.getType());
+                branchBlock.setType(Material.SCULK);
+                tentacleBlocks.add(branchLoc);
+
+                world.playSound(branchLoc, Sound.BLOCK_SCULK_PLACE, 0.2f, 1.2f);
             }
         }
     }
@@ -312,10 +493,10 @@ public class SculkEventManager {
     }
 
     private void addNearbySpreadableToQueue(Location center) {
-        // Add nearby spreadable blocks to spread queue
+        // Add nearby spreadable blocks to spread queue (including more vertical range)
         for (int x = -3; x <= 3; x++) {
             for (int z = -3; z <= 3; z++) {
-                for (int y = -1; y <= 1; y++) {
+                for (int y = -2; y <= 4; y++) { // More upward potential
                     if (x == 0 && z == 0 && y == 0) continue;
 
                     Location loc = center.clone().add(x, y, z);
@@ -323,7 +504,7 @@ public class SculkEventManager {
                     if (loc.distance(eventCenter) <= maxRadius &&
                             isSpreadableBlock(loc.getBlock().getType()) &&
                             !sculkBlocks.containsKey(loc) &&
-                            !curedLocations.contains(loc)) {
+                            !isPermanentlyCured(loc)) { // FIXED: Use proper cured check
                         spreadQueue.add(loc);
                     }
                 }
@@ -352,7 +533,7 @@ public class SculkEventManager {
     private void spawnRandomSculkDetail(Block sculkBlock) {
         // Check if there's space above
         Block above = sculkBlock.getRelative(BlockFace.UP);
-        if (above.getType() != Material.AIR) {
+        if (above.getType() != Material.AIR || isPermanentlyCured(above.getLocation())) {
             return;
         }
 
@@ -384,40 +565,32 @@ public class SculkEventManager {
         boolean cured = false;
         int cleanupCount = 0;
 
-        // Cure sculk in a 3x3 area
+        // Cure sculk in a 3x3x3 area (including vertical)
         for (int x = -1; x <= 1; x++) {
             for (int z = -1; z <= 1; z++) {
-                Location cureSpot = location.clone().add(x, 0, z);
+                for (int y = -1; y <= 2; y++) { // Check above and below too
+                    Location cureSpot = location.clone().add(x, y, z);
 
-                if (sculkBlocks.containsKey(cureSpot)) {
-                    // Restore original block
-                    Block block = cureSpot.getBlock();
-                    Material originalType = sculkBlocks.get(cureSpot);
-                    block.setType(originalType);
+                    if (sculkBlocks.containsKey(cureSpot)) {
+                        // Restore original block
+                        Block block = cureSpot.getBlock();
+                        Material originalType = sculkBlocks.get(cureSpot);
+                        block.setType(originalType);
 
-                    // Remove from sculk tracking
-                    sculkBlocks.remove(cureSpot);
+                        // Remove from sculk tracking
+                        sculkBlocks.remove(cureSpot);
+                        tentacleBlocks.remove(cureSpot); // Also remove from tentacle tracking
 
-                    // Add to cured locations (permanent)
-                    curedLocations.add(cureSpot);
+                        // Add to permanently cured locations
+                        curedLocations.add(cureSpot);
 
-                    cleanupCount++;
-                    cured = true;
-
-                    // Effects
-                    cureSpot.getWorld().playSound(cureSpot, Sound.ITEM_BUCKET_EMPTY, 1.0f, 1.2f);
-                    cureSpot.getWorld().spawnParticle(Particle.SPLASH, cureSpot.add(0.5, 1, 0.5),
-                            10, 0.5, 0.3, 0.5, 0.1);
-                }
-
-                // Also cure sculk details above
-                Location above = cureSpot.clone().add(0, 1, 0);
-                if (sculkBlocks.containsKey(above)) {
-                    Block aboveBlock = above.getBlock();
-                    if (isSculkDetail(aboveBlock.getType())) {
-                        aboveBlock.setType(Material.AIR);
-                        sculkBlocks.remove(above);
                         cleanupCount++;
+                        cured = true;
+
+                        // Effects
+                        cureSpot.getWorld().playSound(cureSpot, Sound.ITEM_BUCKET_EMPTY, 1.0f, 1.2f);
+                        cureSpot.getWorld().spawnParticle(Particle.SPLASH, cureSpot.clone().add(0.5, 1, 0.5),
+                                10, 0.5, 0.3, 0.5, 0.1);
                     }
                 }
             }
@@ -472,8 +645,6 @@ public class SculkEventManager {
         for (Location sculkLoc : new ArrayList<>(sculkBlocks.keySet())) {
             Block block = sculkLoc.getBlock();
             if (block.getType() == Material.SCULK) {
-                spreadQueue.add(sculkLoc);
-                // Also add spreadable blocks around each sculk block
                 addNearbySpreadableToQueue(sculkLoc);
             }
         }
@@ -505,6 +676,10 @@ public class SculkEventManager {
 
     public int getSpreadQueueSize() {
         return spreadQueue.size();
+    }
+
+    public int getTentacleCount() {
+        return tentacleBlocks.size();
     }
 
     public PlayerStatsManager getStatsManager() {
