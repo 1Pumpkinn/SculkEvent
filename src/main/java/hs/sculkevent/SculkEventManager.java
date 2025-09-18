@@ -19,7 +19,7 @@ public class SculkEventManager {
 
     private boolean eventActive = false;
     private Location eventCenter;
-    private final int maxRadius = 100;
+    private final int maxRadius = 500;
 
     // Track sculk blocks and their original types
     private final Map<Location, Material> sculkBlocks = new ConcurrentHashMap<>();
