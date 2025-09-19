@@ -57,6 +57,16 @@ public class SculkEventCommand implements CommandExecutor {
             case "givehorn":
                 return handleGiveHorn(sender, args);
 
+            case "tendril":
+            case "spawntendril":
+                return handleSpawnTendril(sender, args);
+
+            case "reloadstructures":
+                return handleReloadStructures(sender);
+
+            case "structureinfo":
+                return handleStructureInfo(sender);
+
             case "help":
                 sendHelp(sender);
                 return true;
@@ -89,9 +99,10 @@ public class SculkEventCommand implements CommandExecutor {
 
         if (eventManager.startEvent(playerLoc)) {
             sender.sendMessage(ChatColor.GREEN + "Sculk event started at your location!");
-            sender.sendMessage(ChatColor.YELLOW + "The sculk will spread in a 100 block radius.");
+            sender.sendMessage(ChatColor.YELLOW + "The sculk will spread in a 500 block radius.");
             sender.sendMessage(ChatColor.YELLOW + "Use water splash potions to cure infected areas!");
             sender.sendMessage(ChatColor.GOLD + "Clean up sculk to compete for the Corrupted Horn!");
+            sender.sendMessage(ChatColor.DARK_PURPLE + "Watch out for massive sculk tendrils!");
             sender.sendMessage(ChatColor.GRAY + "Check console for debug information.");
         } else {
             sender.sendMessage(ChatColor.RED + "Failed to start sculk event!");
@@ -138,6 +149,7 @@ public class SculkEventCommand implements CommandExecutor {
             sender.sendMessage(ChatColor.GRAY + "Sculk blocks: " + eventManager.getSculkBlockCount());
             sender.sendMessage(ChatColor.GRAY + "Cured locations: " + eventManager.getCuredLocationCount());
             sender.sendMessage(ChatColor.GRAY + "Spread queue size: " + eventManager.getSpreadQueueSize());
+            sender.sendMessage(ChatColor.GRAY + "Tendril blocks: " + eventManager.getTendrilCount());
         }
 
         return true;
@@ -235,6 +247,79 @@ public class SculkEventCommand implements CommandExecutor {
         return true;
     }
 
+    private boolean handleSpawnTendril(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players!");
+            return true;
+        }
+
+        Player player = (Player) sender;
+        org.bukkit.Location loc = player.getLocation();
+
+        String structureName = null;
+        if (args.length > 1) {
+            structureName = args[1];
+        }
+
+        sender.sendMessage(ChatColor.YELLOW + "Spawning sculk tendril at your location...");
+
+        boolean success;
+        if (structureName != null) {
+            success = eventManager.getTendrilManager().spawnTendril(loc, structureName);
+            if (success) {
+                sender.sendMessage(ChatColor.GREEN + "Successfully spawned tendril: " + structureName);
+            } else {
+                sender.sendMessage(ChatColor.RED + "Failed to spawn tendril '" + structureName + "' - using fallback");
+            }
+        } else {
+            success = eventManager.getTendrilManager().spawnRandomTendril(loc);
+            if (success) {
+                sender.sendMessage(ChatColor.GREEN + "Successfully spawned random tendril!");
+            } else {
+                sender.sendMessage(ChatColor.RED + "Failed to spawn tendril!");
+            }
+        }
+
+        return true;
+    }
+
+    private boolean handleReloadStructures(CommandSender sender) {
+        sender.sendMessage(ChatColor.YELLOW + "Reloading tendril structures...");
+        eventManager.getTendrilManager().reloadStructures();
+
+        int count = eventManager.getTendrilManager().getLoadedStructureCount();
+        if (count > 0) {
+            sender.sendMessage(ChatColor.GREEN + "Reloaded " + count + " tendril structures!");
+            sender.sendMessage(ChatColor.GRAY + "Structures: " + eventManager.getTendrilManager().getLoadedStructureNames());
+        } else {
+            sender.sendMessage(ChatColor.YELLOW + "No structures found - tendrils will use procedural generation");
+        }
+
+        return true;
+    }
+
+    private boolean handleStructureInfo(CommandSender sender) {
+        int count = eventManager.getTendrilManager().getLoadedStructureCount();
+
+        sender.sendMessage("");
+        sender.sendMessage(ChatColor.GOLD + "=== TENDRIL STRUCTURE INFO ===");
+        sender.sendMessage(ChatColor.YELLOW + "Loaded structures: " + ChatColor.WHITE + count);
+
+        if (count > 0) {
+            sender.sendMessage(ChatColor.YELLOW + "Available structures:");
+            for (String structureName : eventManager.getTendrilManager().getLoadedStructureNames()) {
+                sender.sendMessage(ChatColor.GRAY + "  - " + structureName);
+            }
+        } else {
+            sender.sendMessage(ChatColor.RED + "No NBT structures found!");
+            sender.sendMessage(ChatColor.GRAY + "Place .nbt files in plugins/SculkEvent/structures/");
+            sender.sendMessage(ChatColor.GRAY + "Expected files: sculk_tendril_small.nbt, sculk_tendril_medium.nbt, etc.");
+        }
+
+        sender.sendMessage("");
+        return true;
+    }
+
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "=== SculkEvent Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/sculkevent start" + ChatColor.WHITE + " - Start sculk event at your location");
@@ -245,10 +330,14 @@ public class SculkEventCommand implements CommandExecutor {
         sender.sendMessage(ChatColor.YELLOW + "/sculkevent leaderboard" + ChatColor.WHITE + " - View top players");
         sender.sendMessage(ChatColor.YELLOW + "/sculkevent resetstats" + ChatColor.WHITE + " - Reset all stats");
         sender.sendMessage(ChatColor.YELLOW + "/sculkevent givehorn <player>" + ChatColor.WHITE + " - Give corrupted horn");
+        sender.sendMessage(ChatColor.YELLOW + "/sculkevent tendril [structure]" + ChatColor.WHITE + " - Spawn tendril");
+        sender.sendMessage(ChatColor.YELLOW + "/sculkevent reloadstructures" + ChatColor.WHITE + " - Reload NBT structures");
+        sender.sendMessage(ChatColor.YELLOW + "/sculkevent structureinfo" + ChatColor.WHITE + " - Show structure info");
         sender.sendMessage(ChatColor.YELLOW + "/sculkevent help" + ChatColor.WHITE + " - Show this help message");
         sender.sendMessage("");
         sender.sendMessage(ChatColor.GRAY + "Tip: Use water splash potions to permanently cure sculk!");
         sender.sendMessage(ChatColor.GRAY + "Tip: Clean up the most sculk to win the Corrupted Horn!");
+        sender.sendMessage(ChatColor.DARK_PURPLE + "Tip: Place NBT files in structures/ folder for custom tendrils!");
     }
 
     private String formatLocation(org.bukkit.Location loc) {

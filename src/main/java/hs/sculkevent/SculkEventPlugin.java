@@ -31,6 +31,16 @@ public class SculkEventPlugin extends JavaPlugin {
 
         getLogger().info("SculkEvent plugin enabled!");
         getLogger().info("Features: Enhanced spreading, player stats, corrupted horn reward system");
+        getLogger().info("Tendrils: NBT structure support with fallback procedural generation");
+
+        // Log tendril structure info
+        int structureCount = eventManager.getTendrilManager().getLoadedStructureCount();
+        if (structureCount > 0) {
+            getLogger().info("Loaded " + structureCount + " tendril structures: " +
+                    eventManager.getTendrilManager().getLoadedStructureNames());
+        } else {
+            getLogger().info("No NBT structures found - tendrils will use procedural generation");
+        }
     }
 
     @Override

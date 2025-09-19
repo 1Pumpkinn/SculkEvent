@@ -16,6 +16,7 @@ public class SculkEventManager {
     private final SculkDataManager dataManager;
     private final PlayerStatsManager statsManager;
     private final CorruptedHornManager hornManager;
+    private final TendrilStructureManager tendrilManager;
 
     private boolean eventActive = false;
     private Location eventCenter;
@@ -25,12 +26,12 @@ public class SculkEventManager {
     private final Map<Location, Material> sculkBlocks = new ConcurrentHashMap<>();
     private final Set<Location> curedLocations = ConcurrentHashMap.newKeySet();
     private final Set<Location> spreadQueue = ConcurrentHashMap.newKeySet();
-    private final Set<Location> tentacleBlocks = ConcurrentHashMap.newKeySet(); // Track tentacle structures
+    private final Set<Location> tendrilBlocks = ConcurrentHashMap.newKeySet(); // Track tendril structures
 
     // Spreading task
     private BukkitTask spreadTask;
     private BukkitTask detailSpawnTask;
-    private BukkitTask tentacleTask;
+    private BukkitTask tendrilTask;
 
     // Spreadable blocks
     private final Set<Material> spreadableBlocks = Set.of(
@@ -83,6 +84,7 @@ public class SculkEventManager {
         this.dataManager = dataManager;
         this.statsManager = statsManager;
         this.hornManager = hornManager;
+        this.tendrilManager = new TendrilStructureManager(plugin);
         loadSavedData();
     }
 
@@ -100,7 +102,7 @@ public class SculkEventManager {
         // Clear previous data for new event
         sculkBlocks.clear();
         spreadQueue.clear();
-        tentacleBlocks.clear();
+        tendrilBlocks.clear();
 
         // Load any previously cured locations (these stay permanent)
         curedLocations.addAll(dataManager.loadCuredLocations());
@@ -138,7 +140,7 @@ public class SculkEventManager {
 
         startSpreadingTask();
         startDetailSpawningTask();
-        startTentacleTask();
+        startTendrilTask();
 
         return true;
     }
@@ -166,8 +168,8 @@ public class SculkEventManager {
         if (detailSpawnTask != null) {
             detailSpawnTask.cancel();
         }
-        if (tentacleTask != null) {
-            tentacleTask.cancel();
+        if (tendrilTask != null) {
+            tendrilTask.cancel();
         }
 
         // Award the corrupted horn to the top player
@@ -179,7 +181,7 @@ public class SculkEventManager {
         // Clear runtime data but keep cured locations
         sculkBlocks.clear();
         spreadQueue.clear();
-        tentacleBlocks.clear();
+        tendrilBlocks.clear();
 
         return true;
     }
@@ -267,17 +269,17 @@ public class SculkEventManager {
         }.runTaskTimer(plugin, 200L, 60L);
     }
 
-    private void startTentacleTask() {
-        tentacleTask = new BukkitRunnable() {
+    private void startTendrilTask() {
+        tendrilTask = new BukkitRunnable() {
             @Override
             public void run() {
                 if (!eventActive || sculkBlocks.size() < 20) {
                     return;
                 }
 
-                // Spawn tentacles occasionally
+                // Spawn tendrils occasionally
                 if (ThreadLocalRandom.current().nextDouble() < 0.3) { // 30% chance every cycle
-                    spawnSculkTentacle();
+                    spawnSculkTendril();
                 }
             }
         }.runTaskTimer(plugin, 400L, 200L); // Every 10 seconds
@@ -339,13 +341,13 @@ public class SculkEventManager {
         }
     }
 
-    private void spawnSculkTentacle() {
+    private void spawnSculkTendril() {
         // Find a good sculk block to start from
         List<Location> sculkLocs = new ArrayList<>();
         for (Location loc : sculkBlocks.keySet()) {
             Block block = loc.getBlock();
             if (block.getType() == Material.SCULK) {
-                // Check if there's space above for a tentacle
+                // Check if there's space above for a tendril
                 boolean hasSpace = true;
                 for (int i = 1; i <= 8; i++) {
                     Block above = block.getRelative(0, i, 0);
@@ -365,117 +367,12 @@ public class SculkEventManager {
         }
 
         Location baseLocation = sculkLocs.get(ThreadLocalRandom.current().nextInt(sculkLocs.size()));
-        buildTentacle(baseLocation);
-    }
 
-    private void buildTentacle(Location base) {
-        World world = base.getWorld();
-        ThreadLocalRandom random = ThreadLocalRandom.current();
-
-        // Tentacle parameters
-        int height = random.nextInt(5, 12); // 5-11 blocks tall
-        int segments = height / 2;
-
-        // Build main tentacle trunk
-        for (int y = 1; y <= height; y++) {
-            Location tentacleLoc = base.clone().add(0, y, 0);
-
-            // Skip if permanently cured
-            if (isPermanentlyCured(tentacleLoc)) {
-                continue;
-            }
-
-            Block tentacleBlock = tentacleLoc.getBlock();
-
-            if (tentacleBlock.getType() == Material.AIR || isSpreadableBlock(tentacleBlock.getType())) {
-                // Store original if not air
-                if (tentacleBlock.getType() != Material.AIR) {
-                    sculkBlocks.put(tentacleLoc, tentacleBlock.getType());
-                } else {
-                    sculkBlocks.put(tentacleLoc, Material.AIR);
-                }
-
-                tentacleBlock.setType(Material.SCULK);
-                tentacleBlocks.add(tentacleLoc);
-
-                // Add some organic curves to the tentacle
-                if (y > 2 && random.nextDouble() < 0.3) {
-                    int xOffset = random.nextInt(-1, 2);
-                    int zOffset = random.nextInt(-1, 2);
-
-                    if (xOffset != 0 || zOffset != 0) {
-                        Location curvedLoc = tentacleLoc.clone().add(xOffset, 0, zOffset);
-                        if (!isPermanentlyCured(curvedLoc)) {
-                            Block curvedBlock = curvedLoc.getBlock();
-                            if (curvedBlock.getType() == Material.AIR || isSpreadableBlock(curvedBlock.getType())) {
-                                sculkBlocks.put(curvedLoc, curvedBlock.getType());
-                                curvedBlock.setType(Material.SCULK);
-                                tentacleBlocks.add(curvedLoc);
-                            }
-                        }
-                    }
-                }
-
-                // Add branches occasionally
-                if (y > 3 && y % 3 == 0 && random.nextDouble() < 0.4) {
-                    createTentacleBranch(tentacleLoc, random.nextInt(2, 5));
-                }
-
-                // Effects
-                world.playSound(tentacleLoc, Sound.BLOCK_SCULK_PLACE, 0.4f, 0.8f);
-                world.spawnParticle(Particle.SCULK_SOUL, tentacleLoc.add(0.5, 0.5, 0.5), 2, 0.2, 0.2, 0.2, 0.01);
-            }
-        }
-
-        // Add a shrieker or sensor at the top
-        Location tipLocation = base.clone().add(0, height + 1, 0);
-        if (!isPermanentlyCured(tipLocation)) {
-            Block tipBlock = tipLocation.getBlock();
-            if (tipBlock.getType() == Material.AIR) {
-                sculkBlocks.put(tipLocation, Material.AIR);
-                if (random.nextBoolean()) {
-                    tipBlock.setType(Material.SCULK_SHRIEKER);
-                } else {
-                    tipBlock.setType(Material.SCULK_SENSOR);
-                }
-                tentacleBlocks.add(tipLocation);
-
-                world.playSound(tipLocation, Sound.BLOCK_SCULK_SHRIEKER_PLACE, 0.8f, 1.0f);
-                world.spawnParticle(Particle.SCULK_SOUL, tipLocation.add(0.5, 0.5, 0.5), 5, 0.3, 0.3, 0.3, 0.05);
-            }
-        }
-
-        // Announcement
-        Bukkit.broadcastMessage(ChatColor.DARK_PURPLE + "A massive sculk tentacle erupts from the ground!");
-        world.playSound(base, Sound.ENTITY_WARDEN_ROAR, 1.0f, 0.8f);
-    }
-
-    private void createTentacleBranch(Location branchStart, int branchLength) {
-        ThreadLocalRandom random = ThreadLocalRandom.current();
-        World world = branchStart.getWorld();
-
-        // Random direction for branch
-        int xDir = random.nextInt(-1, 2);
-        int zDir = random.nextInt(-1, 2);
-        if (xDir == 0 && zDir == 0) {
-            xDir = random.nextBoolean() ? 1 : -1;
-        }
-
-        for (int i = 1; i <= branchLength; i++) {
-            Location branchLoc = branchStart.clone().add(xDir * i, random.nextInt(-1, 2), zDir * i);
-
-            if (isPermanentlyCured(branchLoc)) {
-                continue;
-            }
-
-            Block branchBlock = branchLoc.getBlock();
-            if (branchBlock.getType() == Material.AIR || isSpreadableBlock(branchBlock.getType())) {
-                sculkBlocks.put(branchLoc, branchBlock.getType());
-                branchBlock.setType(Material.SCULK);
-                tentacleBlocks.add(branchLoc);
-
-                world.playSound(branchLoc, Sound.BLOCK_SCULK_PLACE, 0.2f, 1.2f);
-            }
+        // Use the new tendril structure manager
+        if (tendrilManager.spawnRandomTendril(baseLocation)) {
+            plugin.getLogger().info("Successfully spawned NBT tendril at " + baseLocation);
+        } else {
+            plugin.getLogger().warning("Failed to spawn tendril at " + baseLocation);
         }
     }
 
@@ -579,7 +476,7 @@ public class SculkEventManager {
 
                         // Remove from sculk tracking
                         sculkBlocks.remove(cureSpot);
-                        tentacleBlocks.remove(cureSpot); // Also remove from tentacle tracking
+                        tendrilBlocks.remove(cureSpot); // Also remove from tendril tracking
 
                         // Add to permanently cured locations
                         curedLocations.add(cureSpot);
@@ -678,8 +575,8 @@ public class SculkEventManager {
         return spreadQueue.size();
     }
 
-    public int getTentacleCount() {
-        return tentacleBlocks.size();
+    public int getTendrilCount() {
+        return tendrilBlocks.size();
     }
 
     public PlayerStatsManager getStatsManager() {
@@ -688,5 +585,9 @@ public class SculkEventManager {
 
     public CorruptedHornManager getHornManager() {
         return hornManager;
+    }
+
+    public TendrilStructureManager getTendrilManager() {
+        return tendrilManager;
     }
 }
